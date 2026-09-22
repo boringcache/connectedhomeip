@@ -77,7 +77,9 @@ runs:
           echo "88963ef2cc21ca588145d46bcb02b8295275975ed75696eedf2cdb0e9543edd0  $helper_archive" | sha256sum --check
           tar --extract --gzip --file "$helper_archive" --directory "$RUNNER_TEMP"
           install -m 755 "$RUNNER_TEMP/ccache-storage-http-go-0.10-linux-amd64/ccache-storage-http" "$tool_dir/ccache-storage-http"
-          "$tool_dir/ccache-storage-http" --version 2>&1 | tee "$RUNNER_TEMP/validation/ccache-storage-http-version.txt"
+          "$tool_dir/ccache-storage-http" --version > "$RUNNER_TEMP/validation/ccache-storage-http-version.txt" 2>&1 || true
+          cat "$RUNNER_TEMP/validation/ccache-storage-http-version.txt"
+          grep --fixed-strings --line-regexp 'Version: 0.10' "$RUNNER_TEMP/validation/ccache-storage-http-version.txt"
         else
           printf '%s\n' 'Not required by the GitHub archive-cache arm.' > "$RUNNER_TEMP/validation/ccache-storage-http-version.txt"
         fi
