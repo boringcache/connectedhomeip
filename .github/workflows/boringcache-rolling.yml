@@ -1,0 +1,46 @@
+name: BoringCache rolling validation
+run-name: connectedhomeip rolling validation at ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      series:
+        description: Cache series seeded by the cold and warm validation
+        required: false
+        default: matter-linux-ccache-20260922-a
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: connectedhomeip-boringcache-validation
+  cancel-in-progress: false
+
+jobs:
+  commit:
+    name: ${{ matrix.provider }} commit
+    if: github.repository == 'boringcache/connectedhomeip' && github.ref == 'refs/heads/boringcache-validation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/project-chip/chip-build:211
+      options: >-
+        --privileged --sysctl "net.ipv6.conf.all.disable_ipv6=0
+        net.ipv4.conf.all.forwarding=1 net.ipv6.conf.all.forwarding=1"
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [GitHub, BoringCache]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/boringcache-validation
+        with:
+          provider: ${{ matrix.provider }}
+          phase: commit
+          series: ${{ inputs.series }}

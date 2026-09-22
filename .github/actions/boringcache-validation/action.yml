@@ -1,0 +1,170 @@
+name: Run Matter ccache validation
+description: Compare GitHub and BoringCache on the affected Linux application builds
+
+inputs:
+  provider:
+    description: GitHub or BoringCache
+    required: true
+  phase:
+    description: cold, warm, or commit
+    required: true
+  series:
+    description: Cache series shared by all measured revisions
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Record and verify the upstream source
+      shell: bash
+      env:
+        VALIDATION_SERIES: ${{ inputs.series }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/validation"
+        source_commit=$(cat .github/boringcache-source)
+        git cat-file -e "$source_commit^{commit}"
+        git diff --exit-code "$source_commit" -- . \
+          ':!.boringcache.toml' \
+          ':!.github/boringcache*' \
+          ':!.github/actions/boringcache-validation/**' \
+          ':!.github/workflows/boringcache-*'
+        git rev-parse HEAD > "$RUNNER_TEMP/validation/workflow-commit.txt"
+        printf '%s\n' "$source_commit" > "$RUNNER_TEMP/validation/source-commit.txt"
+        uname -a > "$RUNNER_TEMP/validation/runner.txt"
+        lscpu >> "$RUNNER_TEMP/validation/runner.txt"
+        test -n "$VALIDATION_SERIES"
+        [[ "$VALIDATION_SERIES" =~ ^[a-zA-Z0-9-]+$ ]]
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+
+        path = Path(".boringcache.toml")
+        path.write_text(path.read_text().replace("validation-series", os.environ["VALIDATION_SERIES"]))
+        PY
+        cp .boringcache.toml "$RUNNER_TEMP/validation/cache-plan.toml"
+
+    - name: Checkout submodules and bootstrap
+      uses: ./.github/actions/checkout-submodules-and-bootstrap
+      with:
+        platform: linux
+        bootstrap-log-name: bootstrap-logs-linux-${{ inputs.provider }}-${{ inputs.phase }}
+
+    - name: Configure the upstream ccache environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "CCACHE_NOHASHDIR=1"
+          echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+          echo "CCACHE_NODIRECT=1"
+          echo "CCACHE_PREFIX_CPP=${GITHUB_WORKSPACE}/scripts/helpers/ccache-prefix-cpp.sh"
+          echo "CCACHE_SLOPPINESS=time_macros"
+          echo "CCACHE_DIR=${GITHUB_WORKSPACE}/.ccache"
+          echo "CCACHE_COMPILERCHECK=content"
+          echo "CCACHE_MAXSIZE=5G"
+          echo "CCACHE_COMPRESS=1"
+          echo "CCACHE_COMPRESSLEVEL=6"
+          echo "CHIP_PW_COMMAND_LAUNCHER=ccache"
+          echo "BUILD_VARIANT=no-shell-asan-clang"
+          echo "CHIP_TOOL_VARIANT="
+          echo "LSAN_OPTIONS=detect_leaks=1"
+        } >> "$GITHUB_ENV"
+        ccache --version | tee "$RUNNER_TEMP/validation/ccache-version.txt"
+
+    - name: Prepare the GitHub cache key
+      if: inputs.provider == 'GitHub'
+      id: github-key
+      shell: bash
+      env:
+        VALIDATION_SERIES: ${{ inputs.series }}
+      run: |
+        set -euo pipefail
+        source_commit=$(cat .github/boringcache-source)
+        echo "key=matter-${VALIDATION_SERIES}-github-${source_commit}" >> "$GITHUB_OUTPUT"
+        echo "prefix=matter-${VALIDATION_SERIES}-github-" >> "$GITHUB_OUTPUT"
+
+    - name: Start cache setup timing
+      id: cache-start
+      shell: bash
+      run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore GitHub ccache archive
+      if: inputs.provider == 'GitHub'
+      id: github-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .ccache
+        key: ${{ steps.github-key.outputs.key }}
+        restore-keys: |
+          ${{ steps.github-key.outputs.prefix }}
+
+    - name: Configure BoringCache ccache storage
+      if: inputs.provider == 'BoringCache'
+      id: boringcache
+      uses: boringcache/one@9ca311f9b247835b3cc87639321c79bac8018145 # v1.31.0
+      with:
+        cli-version: v1.31.0
+        mode: ccache
+        trust-policy: ${{ inputs.phase == 'warm' && 'restore' || 'publish' }}
+        fail-on-cache-error: true
+        fail-on-cache-miss: ${{ inputs.phase == 'warm' }}
+
+    - name: Record cache setup timing
+      shell: bash
+      env:
+        CACHE_STARTED_AT: ${{ steps.cache-start.outputs.epoch }}
+        GITHUB_CACHE_HIT: ${{ steps.github-cache.outputs.cache-hit }}
+        VALIDATION_PHASE: ${{ inputs.phase }}
+        VALIDATION_PROVIDER: ${{ inputs.provider }}
+      run: |
+        python3 - <<'PY'
+        import json
+        import os
+        import pathlib
+        import time
+
+        result = {
+            "elapsed_seconds": int(time.time()) - int(os.environ["CACHE_STARTED_AT"]),
+            "github_cache_hit": os.environ.get("GITHUB_CACHE_HIT", ""),
+            "phase": os.environ["VALIDATION_PHASE"],
+            "provider": os.environ["VALIDATION_PROVIDER"],
+        }
+        path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "validation" / "cache-setup.json"
+        path.write_text(json.dumps(result, indent=2) + "\n")
+        PY
+
+    - name: Run the affected upstream build phases
+      shell: bash
+      run: |
+        set -euo pipefail
+        ccache --zero-stats
+        started=$SECONDS
+        bash .github/boringcache-build.sh 2>&1 | tee "$RUNNER_TEMP/validation/workload.log"
+        printf '{"elapsed_seconds": %s}\n' "$((SECONDS - started))" > "$RUNNER_TEMP/validation/workload-total.json"
+
+    - name: Retain compiler-cache statistics
+      if: always()
+      shell: bash
+      run: |
+        ccache --show-stats --format=json > "$RUNNER_TEMP/validation/ccache.json"
+        ccache --show-stats > "$RUNNER_TEMP/validation/ccache.txt"
+        du -sh .ccache > "$RUNNER_TEMP/validation/local-cache-size.txt" || true
+
+    - name: Save the GitHub ccache archive
+      if: inputs.provider == 'GitHub' && inputs.phase != 'warm' && success()
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .ccache
+        key: ${{ steps.github-key.outputs.key }}
+
+    - name: Retain measurements and cache evidence
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: ${{ inputs.provider }}-${{ inputs.phase }}
+        path: |
+          ${{ runner.temp }}/validation
+          ${{ steps.boringcache.outputs.evidence-path }}
+        if-no-files-found: error
+        retention-days: 30

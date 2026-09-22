@@ -1,0 +1,9 @@
+workspace = "boringcache/connectedhomeip"
+
+[proxy]
+metadata-hints = ["project=connectedhomeip", "benchmark=matter-linux-ccache"]
+
+[adapters.ccache]
+tag = "validation-series"
+fail-on-cache-error = true
+metadata-hints = ["tool=ccache", "lane=no-shell-asan-clang"]
