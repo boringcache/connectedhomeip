@@ -22,6 +22,7 @@ runs:
       run: |
         set -euo pipefail
         mkdir -p "$RUNNER_TEMP/validation"
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         source_commit=$(cat .github/boringcache-source)
         git cat-file -e "$source_commit^{commit}"
         git diff --exit-code "$source_commit" -- . \
@@ -147,8 +148,8 @@ runs:
       if: always()
       shell: bash
       run: |
-        ccache --show-stats --format=json > "$RUNNER_TEMP/validation/ccache.json"
         ccache --show-stats > "$RUNNER_TEMP/validation/ccache.txt"
+        ccache --print-stats > "$RUNNER_TEMP/validation/ccache-machine.txt"
         du -sh .ccache > "$RUNNER_TEMP/validation/local-cache-size.txt" || true
 
     - name: Save the GitHub ccache archive
