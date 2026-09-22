@@ -51,6 +51,42 @@ runs:
         platform: linux
         bootstrap-log-name: bootstrap-logs-linux-${{ inputs.provider }}-${{ inputs.phase }}
 
+    - name: Install the pinned ccache prerequisites
+      shell: bash
+      env:
+        VALIDATION_PROVIDER: ${{ inputs.provider }}
+      run: |
+        set -euo pipefail
+        started=$SECONDS
+        tool_dir="$RUNNER_TEMP/validation-tools/bin"
+        mkdir -p "$tool_dir"
+
+        ccache_archive="$RUNNER_TEMP/ccache-4.14-linux-x86_64-glibc.tar.gz"
+        curl --fail --location --show-error --silent --retry 5 \
+          https://github.com/ccache/ccache/releases/download/v4.14/ccache-4.14-linux-x86_64-glibc.tar.gz \
+          --output "$ccache_archive"
+        echo "c64760b0b85ba86068f4cd162dc42e2dc39c6f46b0cb8c1990dfccbec7a1fed0  $ccache_archive" | sha256sum --check
+        tar --extract --gzip --file "$ccache_archive" --directory "$RUNNER_TEMP"
+        install -m 755 "$RUNNER_TEMP/ccache-4.14-linux-x86_64-glibc/ccache" "$tool_dir/ccache"
+
+        if [[ "$VALIDATION_PROVIDER" == "BoringCache" ]]; then
+          helper_archive="$RUNNER_TEMP/ccache-storage-http-go-0.10-linux-amd64.tar.gz"
+          curl --fail --location --show-error --silent --retry 5 \
+            https://github.com/ccache/ccache-storage-http-go/releases/download/v0.10/ccache-storage-http-go-0.10-linux-amd64.tar.gz \
+            --output "$helper_archive"
+          echo "88963ef2cc21ca588145d46bcb02b8295275975ed75696eedf2cdb0e9543edd0  $helper_archive" | sha256sum --check
+          tar --extract --gzip --file "$helper_archive" --directory "$RUNNER_TEMP"
+          install -m 755 "$RUNNER_TEMP/ccache-storage-http-go-0.10-linux-amd64/ccache-storage-http" "$tool_dir/ccache-storage-http"
+          "$tool_dir/ccache-storage-http" --version 2>&1 | tee "$RUNNER_TEMP/validation/ccache-storage-http-version.txt"
+        else
+          printf '%s\n' 'Not required by the GitHub archive-cache arm.' > "$RUNNER_TEMP/validation/ccache-storage-http-version.txt"
+        fi
+
+        "$tool_dir/ccache" --version | tee "$RUNNER_TEMP/validation/ccache-installed-version.txt"
+        printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
+        printf '{"provider":"%s","elapsed_seconds":%s}\n' \
+          "$VALIDATION_PROVIDER" "$((SECONDS - started))" > "$RUNNER_TEMP/validation/tool-setup.json"
+
     - name: Configure the upstream ccache environment
       shell: bash
       run: |
