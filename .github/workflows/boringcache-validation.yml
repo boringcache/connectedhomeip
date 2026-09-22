@@ -42,7 +42,7 @@ jobs:
           approval_log="$RUNNER_TEMP/boringcache-connect.log"
           nohup boringcache ci connect --oidc-provider github-actions > "$approval_log" 2>&1 &
           echo "$!" > "$RUNNER_TEMP/boringcache-connect.pid"
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if grep -q 'Direct link:' "$approval_log"; then
               exit 0
             fi
