@@ -36,8 +36,36 @@ jobs:
           curl -fsSL https://install.boringcache.com/install.sh -o "$RUNNER_TEMP/install-boringcache.sh"
           sh "$RUNNER_TEMP/install-boringcache.sh"
           printf '%s/.local/bin\n' "$HOME" >> "$GITHUB_PATH"
-      - name: Request browser approval
-        run: boringcache ci connect --oidc-provider github-actions
+      - name: Start the browser approval request
+        run: |
+          set -euo pipefail
+          approval_log="$RUNNER_TEMP/boringcache-connect.log"
+          nohup boringcache ci connect --oidc-provider github-actions > "$approval_log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/boringcache-connect.pid"
+          for attempt in $(seq 1 60); do
+            if grep -q 'Direct link:' "$approval_log"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "The approval link was not produced within 60 seconds."
+          exit 1
+      - name: Retain the short-lived approval request
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: boringcache-oidc-approval-${{ github.run_id }}
+          path: ${{ runner.temp }}/boringcache-connect.log
+          if-no-files-found: error
+          retention-days: 1
+      - name: Wait for browser approval
+        run: |
+          set -euo pipefail
+          pid=$(cat "$RUNNER_TEMP/boringcache-connect.pid")
+          while kill -0 "$pid" 2>/dev/null; do
+            sleep 5
+          done
+          cat "$RUNNER_TEMP/boringcache-connect.log"
+          grep -q 'Machine connection ready' "$RUNNER_TEMP/boringcache-connect.log"
 
   cold:
     name: ${{ matrix.provider }} cold
