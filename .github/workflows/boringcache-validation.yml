@@ -12,7 +12,7 @@ on:
       series:
         description: Cache series shared by cold, warm, and rolling jobs
         required: false
-        default: matter-linux-ccache-20260922-a
+        default: matter-linux-ccache-20260923-a
         type: string
 
 permissions:
